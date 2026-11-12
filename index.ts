@@ -7,11 +7,42 @@
  *
  * A tool is rewritten only when its parameters are exactly the ones listed here, so a pi update
  * that changes a tool's shape falls back to pi's own definition instead of a stale one.
+ *
+ * Tools and prompt sections added by other extensions can be dropped by name. Configure in
+ * ~/.pi/agent/settings.json:
+ *
+ * ```json
+ * { "leanTools": { "dropTools": ["some_tool"], "dropSections": ["some_section"] } }
+ * ```
  */
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 
 /** pi appends the codemode return shape to each tool description after this marker. */
 const CODEMODE_MARKER = "\n\nCodemode: ";
+/** A codemode line that only restates codemode's default return type. */
+const CODEMODE_DEFAULT = /^\n\nCodemode: `tools\.\w+\(args\)` resolves to a string\.$/;
+/** pi's stand-in for deferred tools. It is only useful while a tool search can load them. */
+const DEFERRED_PLACEHOLDER = "__pi_deferred_placeholder__";
+const TOOL_SEARCH = "tool_search";
+
+export interface LeanOptions {
+	/** Tool names to leave out of the request. */
+	dropTools: string[];
+	/** Prompt sections to leave out of the request, named by their `<tag>`. */
+	dropSections: string[];
+}
+
+export const NO_DROPS: LeanOptions = { dropTools: [], dropSections: [] };
+
+function stringList(value: unknown): string[] {
+	return Array.isArray(value) ? value.filter((item): item is string => typeof item === "string" && item.length > 0) : [];
+}
+
+/** Read `leanTools` from pi's settings; anything malformed counts as empty. */
+export function readOptions(settings: Record<string, unknown>): LeanOptions {
+	const raw = isObject(settings.leanTools) ? settings.leanTools : {};
+	return { dropTools: stringList(raw.dropTools), dropSections: stringList(raw.dropSections) };
+}
 
 export interface Rewrite {
 	/** Top-level parameter names the tool must have, no more and no fewer. */
@@ -127,26 +158,98 @@ export function leanTool<T>(tool: T): T {
 		describable(param).description = note;
 	}
 	const marker = tool.description.indexOf(CODEMODE_MARKER);
-	const suffix = marker >= 0 ? tool.description.slice(marker) : "";
+	const codemodeLine = marker >= 0 ? tool.description.slice(marker) : "";
+	const suffix = CODEMODE_DEFAULT.test(codemodeLine) ? "" : codemodeLine;
 	return { ...tool, description: rewrite.description + suffix, [schemaKey]: lean } as T;
 }
 
-/** Rewrite the tools of a provider request. Returns undefined when nothing changed. */
-export function leanPayload(payload: unknown): unknown {
-	if (!isObject(payload) || !Array.isArray(payload.tools)) return undefined;
+function toolName(tool: unknown): string {
+	if (!isObject(tool)) return "";
+	const def = isObject(tool.function) ? tool.function : tool;
+	return typeof def.name === "string" ? def.name.toLowerCase() : "";
+}
+
+/** Remove each `<name>…</name>` section from prompt text. */
+export function dropSections(text: string, names: string[]): string {
+	let out = text;
+	for (const name of names) {
+		const tag = name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+		out = out.replace(new RegExp(`\\n*<${tag}>[\\s\\S]*?</${tag}>`, "g"), "");
+	}
+	return out;
+}
+
+/** Apply `edit` to prompt text held as a string or as text blocks. Returns the input when nothing changed. */
+function mapText(content: unknown, edit: (text: string) => string): unknown {
+	if (typeof content === "string") return edit(content);
+	if (!Array.isArray(content)) return content;
 	let changed = false;
-	const tools = payload.tools.map((tool: unknown) => {
+	const blocks = content.map((block: unknown) => {
+		if (!isObject(block) || typeof block.text !== "string") return block;
+		const text = edit(block.text);
+		if (text === block.text) return block;
+		changed = true;
+		return { ...block, text };
+	});
+	return changed ? blocks : content;
+}
+
+function leanTools(tools: unknown[], drop: string[]): unknown[] {
+	const dropped = new Set(drop.map((name) => name.toLowerCase()));
+	// Nothing can load a deferred tool without a tool search, so the stand-in is dead weight.
+	if (!tools.some((tool) => toolName(tool) === TOOL_SEARCH)) dropped.add(DEFERRED_PLACEHOLDER);
+	let changed = false;
+	const out: unknown[] = [];
+	for (const tool of tools) {
+		if (dropped.has(toolName(tool))) {
+			changed = true;
+			continue;
+		}
 		// Chat-completions style providers nest the definition under `function`.
 		const nested = isObject(tool) && isObject(tool.function);
 		const before = nested ? (tool as Json).function : tool;
 		const after = leanTool(before);
-		if (after === before) return tool;
+		if (after !== before) changed = true;
+		out.push(after === before ? tool : nested ? { ...(tool as Json), function: after } : after);
+	}
+	return changed ? out : tools;
+}
+
+/** Rewrite a provider request. Returns undefined when nothing changed. */
+export function leanPayload(payload: unknown, options: LeanOptions = NO_DROPS): unknown {
+	if (!isObject(payload)) return undefined;
+	const out: Json = { ...payload };
+	let changed = false;
+	const set = (key: string, value: unknown) => {
+		if (value === payload[key]) return;
+		out[key] = value;
 		changed = true;
-		return nested ? { ...(tool as Json), function: after } : after;
-	});
-	return changed ? { ...payload, tools } : undefined;
+	};
+
+	if (Array.isArray(payload.tools)) set("tools", leanTools(payload.tools, options.dropTools));
+
+	if (options.dropSections.length > 0) {
+		const edit = (text: string) => dropSections(text, options.dropSections);
+		for (const key of ["system", "instructions"]) {
+			if (key in payload) set(key, mapText(payload[key], edit));
+		}
+		if (Array.isArray(payload.messages)) {
+			let touched = false;
+			const messages = payload.messages.map((message: unknown) => {
+				if (!isObject(message) || (message.role !== "system" && message.role !== "developer")) return message;
+				const content = mapText(message.content, edit);
+				if (content === message.content) return message;
+				touched = true;
+				return { ...message, content };
+			});
+			if (touched) set("messages", messages);
+		}
+	}
+	return changed ? out : undefined;
 }
 
 export default function piLeanTools(pi: ExtensionAPI) {
-	pi.on("before_provider_request", (event) => leanPayload(event.payload));
+	pi.on("before_provider_request", (event) =>
+		leanPayload(event.payload, readOptions(pi.getSettings() as unknown as Record<string, unknown>)),
+	);
 }

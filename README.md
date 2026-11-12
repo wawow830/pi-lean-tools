@@ -4,7 +4,7 @@ A [pi](https://pi.dev) extension that sends shorter definitions for the built-in
 
 pi describes each built-in tool in a paragraph and then repeats most of it on the parameters. This extension rewrites the outgoing request so each tool has a one-line description and each fact sits on the parameter it is about. Tool names, schemas and behaviour are untouched.
 
-Measured on pi 1.5.2 with `read`, `bash`, `edit`, `write` and `codemode` active, the five definitions drop from 1,851 to 1,259 input tokens per request.
+Measured on pi 1.5.2 with `read`, `bash`, `edit`, `write` and `codemode` active, the five definitions drop from 1,851 to 1,214 input tokens per request, and the unused deferred-tool placeholder saves another 93.
 
 ## Install
 
@@ -31,9 +31,31 @@ edit       Replace exact text in one file.
 write      Create or overwrite a file.
 ```
 
-Parameters with no note (`path`, `command`, `content`, `newText`) carry only their name and type. The line pi appends to each description for codemode (`Codemode: tools.read(args) resolves to …`) is kept.
+Parameters with no note (`path`, `command`, `content`, `newText`) carry only their name and type. The line pi appends to each description for codemode (`Codemode: tools.read(args) resolves to …`) is kept where it names a return shape (`read`, `bash`) and dropped where it only restates codemode's default of a string (`edit`, `write`).
+
+pi's `__pi_deferred_placeholder__` tool is left out when the request has no `tool_search` tool, since nothing could load a deferred tool then.
 
 `codemode` keeps its description except for three things: the sentence about how output is framed (`==> text N/M <==`, `<console_output>`, the temp file `image()` writes), the `models` line, and the note on `code`.
+
+## Drop tools and prompt sections
+
+Other extensions can add tools and prompt sections you may not want. Name them in `~/.pi/agent/settings.json` and they are left out of every request:
+
+```json
+{
+  "leanTools": {
+    "dropTools": ["mcp__example__some_tool"],
+    "dropSections": ["example_section"]
+  }
+}
+```
+
+| Field | Meaning |
+|---|---|
+| `dropTools` | Tool names to remove, matched without regard to case. |
+| `dropSections` | Prompt sections to remove, named by the `<tag>` pi wraps them in. |
+
+pi still believes a dropped tool is active, so the model simply never sees it. A tool that pi defers stays reachable through `tool_search`.
 
 ## What is left out
 
