@@ -1,6 +1,6 @@
 {
   "name": "pi-lean-tools",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "description": "Pi extension that sends shorter definitions for the built-in tools.",
   "type": "module",
   "license": "MIT",

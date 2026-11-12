@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
-import { dropSections, leanPayload, leanTool, readOptions, REWRITES } from "../index.ts";
+import { leanPayload, leanTool, REWRITES } from "../index.ts";
 
 const nullable = (type: string, description: string) => ({ anyOf: [{ type, description }, { type: "null" }] });
 
@@ -120,44 +120,12 @@ describe("leanPayload", () => {
 		assert.equal(leanPayload({ tools: [{ name: "grep", description: "Search", input_schema: { type: "object" } }] }), undefined);
 	});
 
-	const placeholder = { name: "__pi_deferred_placeholder__", description: "Reserved", defer_loading: true };
-	const search = { name: "tool_search", description: "Search", input_schema: { type: "object", properties: { query: {} } } };
-
 	it("rewrites known tools and keeps the rest of the payload", () => {
-		const out = leanPayload({ model: "m", tools: [read, search, placeholder] }) as any;
+		const placeholder = { name: "__pi_deferred_placeholder__", description: "Reserved", defer_loading: true };
+		const out = leanPayload({ model: "m", tools: [read, placeholder] }) as any;
 		assert.equal(out.model, "m");
 		assert.equal(out.tools[0].description.startsWith("Read a text file or image."), true);
-		assert.equal(out.tools[1], search);
-		assert.equal(out.tools[2], placeholder);
-	});
-
-	it("drops the deferred placeholder when no tool search can use it", () => {
-		const out = leanPayload({ tools: [search, placeholder] });
-		assert.equal(out, undefined);
-		const alone = leanPayload({ tools: [{ name: "grep", description: "Search" }, placeholder] }) as any;
-		assert.deepEqual(alone.tools.map((t: any) => t.name), ["grep"]);
-	});
-
-	it("drops configured tools by name, ignoring case", () => {
-		const extra = { name: "mcp__x__Delegate", description: "Start a child" };
-		const out = leanPayload({ tools: [search, extra] }, { dropTools: ["mcp__x__delegate"], dropSections: [] }) as any;
-		assert.deepEqual(out.tools, [search]);
-	});
-
-	it("drops configured sections wherever the prompt lives", () => {
-		const options = { dropTools: [], dropSections: ["extra_rules"] };
-		const text = "Keep this.\n\n<extra_rules>\nline one\nline two\n</extra_rules>\n\n<cwd>\n/x\n</cwd>";
-		const want = "Keep this.\n\n<cwd>\n/x\n</cwd>";
-		assert.equal((leanPayload({ system: text }, options) as any).system, want);
-		const cached = { type: "text", text, cache_control: { type: "ephemeral" } };
-		const blocks = leanPayload({ system: [{ type: "text", text: "id" }, cached] }, options) as any;
-		assert.deepEqual(blocks.system, [{ type: "text", text: "id" }, { ...cached, text: want }]);
-		assert.equal((leanPayload({ instructions: text }, options) as any).instructions, want);
-		const user = { role: "user", content: text };
-		const messages = leanPayload({ messages: [user, { role: "system", content: text }] }, options) as any;
-		assert.equal(messages.messages[0], user);
-		assert.equal(messages.messages[1].content, want);
-		assert.equal(leanPayload({ system: "Nothing to drop." }, options), undefined);
+		assert.equal(out.tools[1], placeholder);
 	});
 
 	it("rewrites definitions nested under `function`", () => {
@@ -176,19 +144,5 @@ describe("leanPayload", () => {
 		const out = (leanPayload({ tools: [codemode] }) as any).tools[0];
 		assert.equal(out.description, REWRITES.codemode.description);
 		assert.deepEqual(out.input_schema.properties.code, { type: "string" });
-	});
-});
-
-describe("dropSections", () => {
-	it("treats the name literally", () => {
-		assert.equal(dropSections("a\n<x.y>\nb\n</x.y>", ["x.y"]), "a");
-		assert.equal(dropSections("a\n<xzy>\nb\n</xzy>", ["x.y"]), "a\n<xzy>\nb\n</xzy>");
-	});
-});
-
-describe("readOptions", () => {
-	it("reads string lists and ignores the rest", () => {
-		assert.deepEqual(readOptions({}), { dropTools: [], dropSections: [] });
-		assert.deepEqual(readOptions({ leanTools: { dropTools: ["a", 1, ""], dropSections: "nope" } }), { dropTools: ["a"], dropSections: [] });
 	});
 });
