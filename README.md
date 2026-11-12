@@ -9,10 +9,9 @@ Measured on pi 1.5.2 with `read`, `bash`, `edit`, `write` and `codemode` active,
 ## Install
 
 ```bash
-git clone <this repository> pi-lean-tools
-pi install ./pi-lean-tools
+pi install git:github.com/wawow830/pi-lean-tools
 # or try it for one run
-pi -e ./pi-lean-tools
+pi -e git:github.com/wawow830/pi-lean-tools
 ```
 
 ## What the model sees
